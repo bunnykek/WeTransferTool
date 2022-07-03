@@ -1,0 +1,218 @@
+import re
+import requests
+import os
+
+
+class we:
+    def __init__(self):
+        """
+        wetransfer.com tool for anonymously uploading and downloading files.    
+        Made by @bunnykek   
+
+        example usage:\n
+        wetransfer = we()\n
+        metadata = wetransfer.upload('path/to/file')\n
+        print(metadata['shortened_url'])\n
+        wetransfer.download(metadata['shortened_url'])\n
+        """
+        global __session
+        __session = requests.Session()
+        __session.headers.update({'X-Requested-With': 'XMLHttpRequest'})
+
+    def upload(self, path: str, display_name: str = '', message: str = ''):
+        """Returns a json containing the metadata and the link to the uploaded file/folder"""
+        if display_name == '':
+            display_name = os.path.basename(path)
+        files, type = self.__get_files(path)
+        files_response = self.__link_files(files, display_name, message)
+        transfer_id = files_response['id']
+        files = files_response['files']
+        self.__process_files(files, transfer_id, path, type)
+        print("transfer_id: ", transfer_id)
+        result = self.__get_transfer_result(transfer_id)
+        return result
+
+    def download(self, download_url: str, download_path: str = ''):
+        """Downloads from a url
+        -> https://wetransfer.com/downloads/XXXXXXXXXX/YYYYY\n
+        -> https://we.tl/X-XXXXXX
+        """
+        id, hash = self.__get_id_hash(download_url)
+        metadata = self.url_metadata(id, hash)
+        ddl = self.__get_ddl(id, hash)
+        ext = metadata['recommended_filename'].split('.')[-1]
+        if download_path == '':
+            download_path = os.path.join(os.getcwd(), metadata['display_name'].split('.')[0]+'.'+ext)
+
+        print(f'Downloading {metadata["display_name"]} [{metadata["size"]/(1024*1014)} MB]')
+
+        with open(download_path, 'wb') as f:
+            f.write(requests.get(ddl).content)
+        return download_path
+
+    def __get_ddl(self, id: str, hash: str):
+
+        json_data = {
+            'security_hash': hash,
+            'intent': 'entire_transfer',
+        }
+
+        response = __session.post(
+            f'https://wetransfer.com/api/v4/transfers/{id}/download', json=json_data)
+        
+        if response.status_code == 200:
+            return response.json()['direct_link']
+        else:
+            raise Exception('get_ddl error\n', response.text)
+
+    def __get_id_hash(self, url: str):
+
+        if 'downloads' in url:
+            result = re.search(
+                r'https://wetransfer\.com/downloads/(.+)/(.+)', url)
+            if result:
+                return result.group(1), result.group(2)
+            else:
+                raise Exception('get_id_hash error\n')
+
+        response = __session.get(url)
+        if response.status_code == 200:
+            result = re.search(
+                r'\"https://wetransfer\.com/downloads/(.+)/(.+)\"', response.text)
+            if result:
+                return result.group(1), result.group(2)
+            else:
+                raise Exception('get_id_hash error\n', response.text)
+
+    def url_metadata(self, id: str, hash: str):
+        json_data = {
+            'security_hash': hash,
+        }
+
+        response = __session.post(
+            f'https://wetransfer.com/api/v4/transfers/{id}/prepare-download', json=json_data)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception('url_metadata error\n', response.text)
+
+    def __get_files(self, path: str) -> list:
+        if os.path.isfile(path):
+            file = [{'name': os.path.basename(path), 'size': os.path.getsize(
+                path), 'item_type': 'file'}]
+            return file, 'file'
+        elif os.path.isdir(path):
+            files = []
+            for file in os.listdir(path):
+                if os.path.isfile(os.path.join(path, file)):
+                    files.append({'name': file, 'size': os.path.getsize(os.path.join(
+                        path, file)), 'item_type': 'file'})
+            return files, 'folder'
+        else:
+            raise Exception('Path is not a file or directory')
+
+    def __link_files(self, files: list, display_name: str, message: str):
+        json_data = {
+            'message': message,
+            'display_name': display_name,
+            'ui_language': 'en',
+            'files': files
+        }
+
+        response = __session.post(
+            'https://wetransfer.com/api/v4/transfers/link', json=json_data)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception("liink files error\n", response.text)
+
+    def __process_files(self, files: dict, transfer_id: str, path: str, type: str):
+        for file in files:
+
+            file_id = file['id']
+            file_name = file['name']
+            file_size = file['size']
+
+            n = int(file['size']/15728640)
+            rem_chunk = 26170623 % 15728640
+
+            chunks_list = [15728640]*n
+            if rem_chunk != 0:
+                chunks_list.append(rem_chunk)
+                n += 1
+
+            self.__enable_response_s3(transfer_id, file_name, file_size)
+            s3_urls = self.__get_s3_urls(chunks_list, n, transfer_id, file_id)
+            if type == 'folder':
+                parts = file_name.split('/')
+                file_path = os.path.join(path, *parts)
+                self.__upload_chunks(file_path, s3_urls)
+            elif type == 'file':
+                self.__upload_chunks(path, s3_urls)
+
+            self.__finalize_chunks_upload(transfer_id, file_id, n)
+
+    def __enable_response_s3(self, transfer_id: str, file_name: str, file_size: int):
+        json_data = {
+            'name': file_name,
+            'size': file_size,
+        }
+
+        response = __session.post(
+            f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files', json=json_data)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception('enable_response_s3 error\n', response.text)
+
+    def __get_s3_urls(self, chunks_list: list, n: int, transfer_id: str, file_id: str):
+        s3_urls = []
+        for i in range(n):
+            json_data = {
+                'chunk_number': i+1,
+                'chunk_size': chunks_list[i],
+                'chunk_crc': 0,
+            }
+
+            response = __session.post(
+                f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files/{file_id}/part-put-url', json=json_data)
+
+            s3_urls.append(response.json()['url'])
+        return s3_urls
+
+    def __upload_chunks(self, file_path: str, s3_urls: list):
+        __session.headers.update({'Content-Type': 'binary/octet-stream'})
+        i = 0
+        with open(file_path, 'rb') as file:
+            while chunk := file.read(15728640):
+                response = __session.put(
+                    s3_urls[i], data=chunk)
+                i += 1
+                if response.status_code != 200:
+                    raise Exception('Error on upload_chunks\n', response.text)
+        __session.headers.pop('Content-Type')
+        print('Uploaded chunks')
+        return True
+
+    def __finalize_chunks_upload(self, transfer_id: str, file_id: str, n: int):
+        print('Finalizing chunks upload')
+        json_data = {
+            'chunk_count': n
+        }
+
+        response = __session.put(
+            f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files/{file_id}/finalize-mpp', json=json_data)
+
+        if response.status_code != 200:
+            raise Exception("Finalize error\n", response.text)
+
+    def __get_transfer_result(self, transfer_id: str):
+        response = __session.put(
+            f'https://wetransfer.com/api/v4/transfers/{transfer_id}/finalize')
+        if response.status_code == 200:
+            return response.json()
+        else:
+            raise Exception("get transfer result error\n", response.text)
