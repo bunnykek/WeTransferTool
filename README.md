@@ -9,7 +9,7 @@ from WE import we
 
 wet = we()
 # to upload a file/folder to the server
-metadata = we.upload('/path/to/file', 'file name', 'message')
+metadata = wet.upload('/path/to/file', 'file name', 'message')
 print(metadata)
 
 # to download a file/folder from the server
