@@ -15,12 +15,13 @@ class we:
         print(metadata['shortened_url'])\n
         wetransfer.download(metadata['shortened_url'])\n
         """
-        global __session
-        __session = requests.Session()
-        __session.headers.update({'X-Requested-With': 'XMLHttpRequest'})
+        self.__session = requests.Session()
+        self.__session.headers.update({'X-Requested-With': 'XMLHttpRequest'})
 
     def upload(self, path: str, display_name: str = '', message: str = ''):
         """Returns a json containing the metadata and the link to the uploaded file/folder"""
+        
+        print("Uploading", os.path.basename(path))
         if display_name == '':
             display_name = os.path.basename(path)
         files, type = self.__get_files(path)
@@ -28,7 +29,7 @@ class we:
         transfer_id = files_response['id']
         files = files_response['files']
         self.__process_files(files, transfer_id, path, type)
-        print("transfer_id: ", transfer_id)
+        # print("transfer_id: ", transfer_id)
         result = self.__get_transfer_result(transfer_id)
         return result
 
@@ -57,7 +58,7 @@ class we:
             'intent': 'entire_transfer',
         }
 
-        response = __session.post(
+        response = self.__session.post(
             f'https://wetransfer.com/api/v4/transfers/{id}/download', json=json_data)
         
         if response.status_code == 200:
@@ -75,7 +76,7 @@ class we:
             else:
                 raise Exception('get_id_hash error\n')
 
-        response = __session.get(url)
+        response = self.__session.get(url)
         if response.status_code == 200:
             result = re.search(
                 r'\"https://wetransfer\.com/downloads/(.+)/(.+)\"', response.text)
@@ -89,7 +90,7 @@ class we:
             'security_hash': hash,
         }
 
-        response = __session.post(
+        response = self.__session.post(
             f'https://wetransfer.com/api/v4/transfers/{id}/prepare-download', json=json_data)
 
         if response.status_code == 200:
@@ -108,6 +109,7 @@ class we:
                 if os.path.isfile(os.path.join(path, file)):
                     files.append({'name': file, 'size': os.path.getsize(os.path.join(
                         path, file)), 'item_type': 'file'})
+            print("Total number of files:", len(files))
             return files, 'folder'
         else:
             raise Exception('Path is not a file or directory')
@@ -120,7 +122,7 @@ class we:
             'files': files
         }
 
-        response = __session.post(
+        response = self.__session.post(
             'https://wetransfer.com/api/v4/transfers/link', json=json_data)
 
         if response.status_code == 200:
@@ -160,7 +162,7 @@ class we:
             'size': file_size,
         }
 
-        response = __session.post(
+        response = self.__session.post(
             f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files', json=json_data)
 
         if response.status_code == 200:
@@ -177,40 +179,40 @@ class we:
                 'chunk_crc': 0,
             }
 
-            response = __session.post(
+            response = self.__session.post(
                 f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files/{file_id}/part-put-url', json=json_data)
 
             s3_urls.append(response.json()['url'])
         return s3_urls
 
     def __upload_chunks(self, file_path: str, s3_urls: list):
-        __session.headers.update({'Content-Type': 'binary/octet-stream'})
+        self.__session.headers.update({'Content-Type': 'binary/octet-stream'})
         i = 0
         with open(file_path, 'rb') as file:
             while chunk := file.read(15728640):
-                response = __session.put(
+                response = self.__session.put(
                     s3_urls[i], data=chunk)
                 i += 1
                 if response.status_code != 200:
                     raise Exception('Error on upload_chunks\n', response.text)
-        __session.headers.pop('Content-Type')
-        print('Uploaded chunks')
+        self.__session.headers.pop('Content-Type')
+        print(f'Uploaded {os.path.basename(file_path)}')
         return True
 
     def __finalize_chunks_upload(self, transfer_id: str, file_id: str, n: int):
-        print('Finalizing chunks upload')
+        # print('Finalizing chunks upload')
         json_data = {
             'chunk_count': n
         }
 
-        response = __session.put(
+        response = self.__session.put(
             f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files/{file_id}/finalize-mpp', json=json_data)
 
         if response.status_code != 200:
             raise Exception("Finalize error\n", response.text)
 
     def __get_transfer_result(self, transfer_id: str):
-        response = __session.put(
+        response = self.__session.put(
             f'https://wetransfer.com/api/v4/transfers/{transfer_id}/finalize')
         if response.status_code == 200:
             return response.json()
