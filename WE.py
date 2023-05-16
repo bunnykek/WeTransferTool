@@ -1,13 +1,16 @@
+# by bunny
 import re
+import time
 import requests
+import hashlib
 import os
 
 
 class we:
     def __init__(self):
         """
-        wetransfer.com tool for anonymously uploading and downloading files.    
-        Made by @bunnykek   
+        wetransfer.com tool for anonymously uploading and downloading files.
+        Made by @bunnykek
 
         example usage:\n
         wetransfer = we()\n
@@ -20,7 +23,7 @@ class we:
 
     def upload(self, path: str, display_name: str = '', message: str = ''):
         """Returns a json containing the metadata and the link to the uploaded file/folder"""
-        
+
         print("Uploading", os.path.basename(path))
         if display_name == '':
             display_name = os.path.basename(path)
@@ -28,10 +31,8 @@ class we:
         files_response = self.__link_files(files, display_name, message)
         transfer_id = files_response['id']
         files = files_response['files']
-        self.__process_files(files, transfer_id, path, type)
-        # print("transfer_id: ", transfer_id)
-        result = self.__get_transfer_result(transfer_id)
-        return result
+        auth_bearer = files_response['storm_upload_token']
+        return self.__process_files(files, transfer_id, path, type, auth_bearer)
 
     def download(self, download_url: str, download_path: str = ''):
         """Downloads from a url
@@ -43,12 +44,14 @@ class we:
         ddl = self.__get_ddl(id, hash)
         ext = metadata['recommended_filename'].split('.')[-1]
         if download_path == '':
-            download_path = os.path.join(os.getcwd(), metadata['display_name'].split('.')[0]+'.'+ext)
+            download_path = os.path.join(
+                os.getcwd(), metadata['display_name'].split('.')[0]+'.'+ext)
 
-        print(f'Downloading {metadata["display_name"]} [{metadata["size"]/(1024*1014)} MB]')
+        print(
+            f'Downloading {metadata["display_name"]} [{metadata["size"]/(1024*1014)} MB]')
 
         with open(download_path, 'wb') as f:
-            f.write(requests.get(ddl).content)
+            f.write(self.__session.get(ddl).content)
         return download_path
 
     def __get_ddl(self, id: str, hash: str):
@@ -60,7 +63,7 @@ class we:
 
         response = self.__session.post(
             f'https://wetransfer.com/api/v4/transfers/{id}/download', json=json_data)
-        
+
         if response.status_code == 200:
             return response.json()['direct_link']
         else:
@@ -130,91 +133,170 @@ class we:
         else:
             raise Exception("liink files error\n", response.text)
 
-    def __process_files(self, files: dict, transfer_id: str, path: str, type: str):
+    def __process_files(self, files: dict, transfer_id: str, path: str, type: str, auth_bearer: str):
+        items = []
+        contentlenforblocks = []
+        content_md5 = []
+        files_path = []
+        file_name_bcount = []
         for file in files:
 
-            file_id = file['id']
             file_name = file['name']
             file_size = file['size']
 
-            n = int(file['size']/15728640)
-            rem_chunk = 26170623 % 15728640
+            if type == 'folder':
+                file_path = os.path.join(path, file_name)
+            elif type == 'file':
+                file_path = path
 
+            files_path.append(file_path)
+
+            n = int(file_size/15728640)
             chunks_list = [15728640]*n
-            if rem_chunk != 0:
+
+            rem_chunk = file_size % 15728640
+            if rem_chunk:
                 chunks_list.append(rem_chunk)
                 n += 1
 
-            self.__enable_response_s3(transfer_id, file_name, file_size)
-            s3_urls = self.__get_s3_urls(chunks_list, n, transfer_id, file_id)
-            if type == 'folder':
-                parts = file_name.split('/')
-                file_path = os.path.join(path, *parts)
-                self.__upload_chunks(file_path, s3_urls)
-            elif type == 'file':
-                self.__upload_chunks(path, s3_urls)
+            file_name_bcount.append((file_name, n))
 
-            self.__finalize_chunks_upload(transfer_id, file_id, n)
+            blocks = []
+            for contlen in chunks_list:
+                blocks.append({'content_length': contlen})
+                contentlenforblocks.append(contlen)
 
-    def __enable_response_s3(self, transfer_id: str, file_name: str, file_size: int):
-        json_data = {
-            'name': file_name,
-            'size': file_size,
+            with open(file_path, "rb") as f:
+                data = f.read(15728640)
+                while data:
+                    content_md5.append(hashlib.md5(data).hexdigest())
+                    data = f.read(15728640)
+
+            item = {
+                'path': file_name,
+                'item_type': 'file',
+                'blocks': blocks
+            }
+
+            items.append(item)
+
+        self.__preflight(items, auth_bearer)
+
+        blocks_payload = []
+        for x, y in zip(contentlenforblocks, content_md5):
+            blocks_payload.append({
+                'content_length': x,
+                'content_md5_hex': y
+            })
+
+        s3_urls = self.__blocks(blocks_payload, auth_bearer)  # url md5 blockid
+
+        # print(s3_urls)
+
+        self.__upload_chunks(files_path, s3_urls)
+
+        time.sleep(2)
+
+        self.__batch(file_name_bcount, s3_urls, auth_bearer)
+
+        return self.__finalize_chunks_upload(transfer_id)
+
+    def __batch(self, file_name_bcount, s3_urls, auth_bearer):
+
+        items = []
+        i = 0
+        # print(file_name_bcount)
+        for file_name, count in file_name_bcount:
+            item = {
+                'path': file_name,
+                'item_type': 'file',
+                'block_ids': [url[2] for url in s3_urls[i:i+count]]
+            }
+            i += count
+            items.append(item)
+
+        headers = {
+            'Authorization': f'Bearer {auth_bearer}',
         }
 
+        json_data = {
+            'items': items
+        }
+        # print(json.dumps(json_data, indent=2))
+
         response = self.__session.post(
-            f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files', json=json_data)
+            'https://storm-eu-west-1.wetransfer.net/api/v2/batch', headers=headers, json=json_data)
+        # print(response.status_code)
+
+    def __preflight(self, items, auth_bearer: str):
+        headers = {
+            'Authorization': f'Bearer {auth_bearer}',
+        }
+
+        json_data = {
+            'items': items
+        }
+
+        # print(json.dumps(json_data, indent=2))
+
+        response = self.__session.post(
+            'https://storm-eu-west-1.wetransfer.net/api/v2/batch/preflight', json=json_data, headers=headers)
 
         if response.status_code == 200:
             return response.json()
         else:
             raise Exception('enable_response_s3 error\n', response.text)
 
-    def __get_s3_urls(self, chunks_list: list, n: int, transfer_id: str, file_id: str):
+    def __blocks(self, blocks: list, auth_bearer: str):
         s3_urls = []
-        for i in range(n):
-            json_data = {
-                'chunk_number': i+1,
-                'chunk_size': chunks_list[i],
-                'chunk_crc': 0,
-            }
 
-            response = self.__session.post(
-                f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files/{file_id}/part-put-url', json=json_data)
+        headers = {
+            'Authorization': f'Bearer {auth_bearer}',
+        }
 
-            s3_urls.append(response.json()['url'])
+        json_data = {
+            'blocks': blocks
+        }
+
+        response = self.__session.post(
+            'https://storm-eu-west-1.wetransfer.net/api/v2/blocks', headers=headers, json=json_data)
+        rblocks = response.json()['data']['blocks']
+        for rblock in rblocks:
+            s3_urls.append([rblock['presigned_put_url'],
+                           rblock['put_request_headers']['Content-MD5'], rblock['block_id']])
         return s3_urls
 
-    def __upload_chunks(self, file_path: str, s3_urls: list):
-        self.__session.headers.update({'Content-Type': 'binary/octet-stream'})
+    def __upload_chunks(self, files_path: list, s3_urls: list):
+        headers = {
+            'Content-MD5': '',
+        }
+
         i = 0
-        with open(file_path, 'rb') as file:
-            while chunk := file.read(15728640):
-                response = self.__session.put(
-                    s3_urls[i], data=chunk)
-                i += 1
-                if response.status_code != 200:
-                    raise Exception('Error on upload_chunks\n', response.text)
-        self.__session.headers.pop('Content-Type')
-        print(f'Uploaded {os.path.basename(file_path)}')
+        for file_path in files_path:
+            with open(file_path, 'rb') as file:
+                while chunk := file.read(15728640):
+                    headers['Content-MD5'] = s3_urls[i][1]
+                    response = self.__session.put(
+                        s3_urls[i][0], data=chunk, headers=headers)
+                    i += 1
+                    if response.status_code != 200:
+                        raise Exception(
+                            'Error on upload_chunks\n', response.text)
+            print(f'Uploaded {os.path.basename(file_path)}')
         return True
 
-    def __finalize_chunks_upload(self, transfer_id: str, file_id: str, n: int):
-        # print('Finalizing chunks upload')
+    def __finalize_chunks_upload(self, transfer_id: str):
+
         json_data = {
-            'chunk_count': n
+            'wants_storm': True,
         }
 
         response = self.__session.put(
-            f'https://wetransfer.com/api/v4/transfers/{transfer_id}/files/{file_id}/finalize-mpp', json=json_data)
+            f'https://wetransfer.com/api/v4/transfers/{transfer_id}/finalize',
+            json=json_data
+        )
 
         if response.status_code != 200:
             raise Exception("Finalize error\n", response.text)
-
-    def __get_transfer_result(self, transfer_id: str):
-        response = self.__session.put(
-            f'https://wetransfer.com/api/v4/transfers/{transfer_id}/finalize')
-        if response.status_code == 200:
-            return response.json()
         else:
-            raise Exception("get transfer result error\n", response.text)
+            return response.json()
