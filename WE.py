@@ -1,10 +1,11 @@
 # by bunny
+import base64
+import json
 import re
 import time
 import requests
 import hashlib
 import os
-
 
 class we:
     def __init__(self):
@@ -32,6 +33,7 @@ class we:
         transfer_id = files_response['id']
         files = files_response['files']
         auth_bearer = files_response['storm_upload_token']
+        self.endpoints = self.__decodejwt(auth_bearer)
         return self.__process_files(files, transfer_id, path, type, auth_bearer)
 
     def download(self, download_url: str, download_path: str = ''):
@@ -223,9 +225,8 @@ class we:
             'items': items
         }
         # print(json.dumps(json_data, indent=2))
-
-        response = self.__session.post(
-            'https://storm-eu-west-1.wetransfer.net/api/v2/batch', headers=headers, json=json_data)
+        
+        response = self.__session.post(self.endpoints['storm.create_batch_url'], headers=headers, json=json_data)
         # print(response.status_code)
 
     def __preflight(self, items, auth_bearer: str):
@@ -238,9 +239,7 @@ class we:
         }
 
         # print(json.dumps(json_data, indent=2))
-
-        response = self.__session.post(
-            'https://storm-eu-west-1.wetransfer.net/api/v2/batch/preflight', json=json_data, headers=headers)
+        response = self.__session.post(self.endpoints['storm.preflight_batch_url'], json=json_data, headers=headers)
 
         if response.status_code == 200:
             return response.json()
@@ -258,8 +257,7 @@ class we:
             'blocks': blocks
         }
 
-        response = self.__session.post(
-            'https://storm-eu-west-1.wetransfer.net/api/v2/blocks', headers=headers, json=json_data)
+        response = self.__session.post(self.endpoints['storm.announce_blocks_url'], headers=headers, json=json_data)
         rblocks = response.json()['data']['blocks']
         for rblock in rblocks:
             s3_urls.append([rblock['presigned_put_url'],
@@ -300,3 +298,8 @@ class we:
             raise Exception("Finalize error\n", response.text)
         else:
             return response.json()
+    
+    def __decodejwt(self, jwt_token):
+        payload_b64= jwt_token.split('.')[1]
+        payload = json.loads(base64.b64decode(payload_b64 + '==').decode('utf-8'))
+        return payload
