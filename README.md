@@ -3,11 +3,15 @@ Anonymously upload and download files/folders from wetransfer.com
 
 You can upload a file/folder of max 2GB.   
 
+```
+pip install WeTransferTool
+```
+
 example usage:
 ```
-from WE import we
+from WeTransferTool import We
 
-wet = we()
+wet = We()
 # to upload a file/folder to the server
 metadata = wet.upload('/path/to/file', 'file name', 'message')
 print(metadata)
