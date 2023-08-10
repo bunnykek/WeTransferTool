@@ -7,7 +7,7 @@ import requests
 import hashlib
 import os
 
-class we:
+class We:
     def __init__(self):
         """
         wetransfer.com tool for anonymously uploading and downloading files.
