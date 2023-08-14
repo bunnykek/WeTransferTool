@@ -1,13 +1,24 @@
 # WeTransferTool
-Anonymously upload and download files/folders from wetransfer.com
-
+Upload and download files/folders from wetransfer.com        
 You can upload a file/folder of max 2GB.   
 
+Installation:
 ```
 pip install WeTransferTool
 ```
 
-example usage:
+Terminal use:
+```
+$> wetransfertool -h
+usage: wetransfertool [-h] [-dl DL] [-ul UL]
+
+options:
+  -h, --help  show this help message and exit
+  -dl DL      Wetransfer file URL
+  -ul UL      File/Folder path
+```
+
+API use:
 ```
 from WeTransferTool import We
 
