@@ -10,12 +10,13 @@ pip install WeTransferTool
 Terminal use:
 ```
 $> wetransfertool -h
-usage: wetransfertool [-h] [-dl DL] [-ul UL]
+usage: wetransfertool [-h] [-dl DL] [-ul UL] [-mw MW]
 
 options:
   -h, --help  show this help message and exit
   -dl DL      Wetransfer file URL
   -ul UL      File/Folder path
+  -mw MW      Maximum number of workers (parallel uploads)
 ```
 
 API use:

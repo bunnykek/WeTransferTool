@@ -5,7 +5,7 @@ long_description = (this_directory / "README.md").read_text()
 setup(
   name = 'WeTransferTool',         # How you named your package folder (MyLib)
   packages = ['WeTransferTool'],   # Chose the same as "name"
-  version = '0.5',      # Start with a small number and increase it with every change you make
+  version = '0.7',      # Start with a small number and increase it with every change you make
   license='MIT',        # Chose a license from here: https://help.github.com/articles/licensing-a-repository
   description = 'WeTransfer unofficial API wrapper written in python facilitating features like uploading and downloading files and folders',   # Give a short description about your library
   long_description=long_description,
@@ -17,5 +17,8 @@ setup(
   keywords = ['api', 'wetransfer', 'wrapper', 'upload', 'download'],   # Keywords that define your package best
   install_requires=[            # I get to this in a second
           'requests',
-      ]
+      ],
+  entry_points = {
+        'console_scripts': ['wetransfertool=WeTransferTool.main_module:main_func'],
+    }
 )
