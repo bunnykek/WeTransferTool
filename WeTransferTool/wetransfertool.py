@@ -20,22 +20,39 @@ class We:
         print(metadata['shortened_url'])\n
         wetransfer.download(metadata['shortened_url'])\n
         """
+        print("Initialized object..")
         self.__session = requests.Session()
         self.__session.headers.update({'X-Requested-With': 'XMLHttpRequest'})
 
-    def upload(self, path: str, display_name: str = '', message: str = '', max_workers: int = 10):
+    def upload(self, path: str, display_name: str = '', message: str = '', max_workers: int = 10, retry_count: int = 0, max_retries: int = 3):
         """Returns a json containing the metadata and the link to the uploaded file/folder"""
+        try:
+            print("Uploading", os.path.basename(path))
+            if display_name == '':
+                display_name = os.path.basename(path)
+            files, type = self.__get_files(path)
+            files_response = self.__link_files(files, display_name, message)
+            transfer_id = files_response['id']
+            files = files_response['files']
+            auth_bearer = files_response['storm_upload_token']
+            self.endpoints = self._decodejwt(auth_bearer)
+            metadata = self.__process_files(files, transfer_id, path, type, auth_bearer, max_workers)
 
-        print("Uploading", os.path.basename(path))
-        if display_name == '':
-            display_name = os.path.basename(path)
-        files, type = self.__get_files(path)
-        files_response = self.__link_files(files, display_name, message)
-        transfer_id = files_response['id']
-        files = files_response['files']
-        auth_bearer = files_response['storm_upload_token']
-        self.endpoints = self.__decodejwt(auth_bearer)
-        return self.__process_files(files, transfer_id, path, type, auth_bearer, max_workers)
+            if 'shortened_url' in metadata:
+                print(f"Upload successful: {metadata['shortened_url']}")
+                return metadata
+            else:
+                raise Exception("Failed to get shortened URL after upload")
+
+        except Exception as e:
+            if retry_count < max_retries:
+                print(f"Upload process failed, retrying {retry_count + 1}/{max_retries}...")
+                new_instance = We()
+                time.sleep(5)  # wait before retrying - possibly readjust to be smaller? idk
+                return new_instance.upload(path, display_name, message, max_workers, retry_count + 1, max_retries)
+            else:
+                print(f"Upload process failed after {max_retries} retries.")
+                raise e
 
     def download(self, download_url: str, download_path: str = ''):
         """Downloads from a url
@@ -298,23 +315,48 @@ class We:
 
             print(f'Uploaded {", ".join([os.path.basename(path) for path in files_path])}')
 
-    def __finalize_chunks_upload(self, transfer_id: str):
-
+    # ----- MODIFIED -----
+    def __finalize_chunks_upload(self, transfer_id: str, retry_count: int = 0, max_retries: int = 1, backoff_factor: int = 2):
+        print(f"(IN __finalize_chunks_upload) transfer_id: {transfer_id}, retry_count: {retry_count}")
         json_data = {
             'wants_storm': True,
         }
 
-        response = self.__session.put(
-            f'https://wetransfer.com/api/v4/transfers/{transfer_id}/finalize',
-            json=json_data
-        )
+        try:
+            response = self.__session.put(
+                f'https://wetransfer.com/api/v4/transfers/{transfer_id}/finalize',
+                json=json_data,
+                timeout=30  # Increase the timeout duration
+            )
 
-        if response.status_code != 200:
-            raise Exception("Finalize error\n", response.text)
-        else:
-            return response.json()
+            if response.status_code != 200:
+                error_message = response.text
+                #print(f"Finalize error (attempt {retry_count + 1}): {error_message}")
+
+                if retry_count < max_retries:
+                    wait_time = backoff_factor ** retry_count
+                    print(f"response.status_code NOT 200 | Retrying __finalize_chunks_upload {retry_count + 1}/{max_retries} via recursion in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                    return self.__finalize_chunks_upload(transfer_id, retry_count + 1, max_retries, backoff_factor)
+                else:
+                    raise Exception(f"Finalize error after {max_retries} retries\n", error_message)
+            else:
+                print("Response status code 200 :) | Success!")
+                return response.json()
+
+        except requests.exceptions.Timeout:
+            # Handle timeout separately if needed
+            if retry_count < max_retries:
+                wait_time = backoff_factor ** retry_count
+                print(f"Timeout occurred | Retrying {retry_count + 1}/{max_retries} via recursion in {wait_time} seconds...")
+                time.sleep(wait_time)
+                return self.__finalize_chunks_upload(transfer_id, retry_count + 1, max_retries, backoff_factor)
+            else:
+                raise Exception(f"Finalize error due to timeout after {max_retries} retries\n")
+
+
     
-    def __decodejwt(self, jwt_token):
+    def _decodejwt(self, jwt_token):
         payload_b64= jwt_token.split('.')[1]
         payload = json.loads(base64.b64decode(payload_b64 + '==').decode('utf-8'))
         return payload
