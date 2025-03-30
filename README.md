@@ -1,3 +1,5 @@
+> [!Note]
+> Now WeTransfer has made sender email verification mandatory to prevent spam on their services. Hence now we cannot utilize this tool to upload file anonymously.
 # WeTransferTool
 Upload and download files/folders from wetransfer.com        
 You can upload a file/folder of max 2GB.   
